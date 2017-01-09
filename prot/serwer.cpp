@@ -20,7 +20,6 @@ int main(int argc, char **argv) {
         printf("Usage: %s PATH IP PORT\n",argv[0]);
         exit(EXIT_FAILURE);
     }
-    /*argumenty ip jako lancuch, port jako int*/
 	char connect_info[BUF_SIZE];
     char *data = (char *)calloc(BUF_SIZE, sizeof(char));
     char *data2 = (char *)calloc(BUF_SIZE, sizeof(char));

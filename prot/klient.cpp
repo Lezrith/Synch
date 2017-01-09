@@ -62,14 +62,9 @@ int sock_num;
 int root_length;
 char **dir_list;
 bool dir_list_state[MAX_DIRS];
-int *wd;
-int fd;
 map<string, string> moveto_special;
 map<string, string> moveto_normal;
 map<string, string> tar_names;
-map<string, string>::iterator it;
-map<string, string>::iterator it2;
-map<string, string>::iterator current_bigdir;
 
 #ifdef BIGDIR
     char bigdir[BUFLEN];
@@ -93,7 +88,7 @@ int find_free_index(){
 /*end of find_free_index*/
 
 /*finds all subdirectories of dir and adds watches for them*/
-void recursive_add_watch(char *dir){
+void add_watches_to_subdirs(char *dir, int *watch_desc, int in_file_desc){
     char find_command[BUFLEN];
     FILE *fp;
     int index;
@@ -127,10 +122,10 @@ void recursive_add_watch(char *dir){
         }
         
         /*add a watch to this dir*/
-        wd[index] = inotify_add_watch(fd, dir_list[index], 
+        watch_desc[index] = inotify_add_watch(in_file_desc, dir_list[index], 
             IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
         dir_list_state[index] = true;
-        if (wd[index] == -1) {
+        if (watch_desc[index] == -1) {
             fprintf(stderr, "Cannot watch '%s'\n", dir_list[index]);
             perror("inotify_add_watch");
             exit(EXIT_FAILURE);
@@ -141,7 +136,7 @@ void recursive_add_watch(char *dir){
     }
     pclose(fp);
 }
-/*end of recursive_add_watch*/
+/*end of add_watches_to_subdirs*/
 
 int written;
 char arr[BUFLEN];
@@ -165,14 +160,14 @@ void send_string(int sock_num_arg, string string_to_send, string msg_name){
 
 void delete_dir(char *full_path_arg, char *path_arg){
 
-    /*mark the place of old watch as free, 
-    inotify_rm_watch when invoked gives invalid argument error*/
+    /*mark the place of old watch as free */
     for(int k=0; k<MAX_DIRS; k++)
         if(!strcmp(full_path_arg, dir_list[k]))
             dir_list_state[k] = false;
          
     /* (1) after the normal MOVED_TO directory was deleted,
     rename special-named temporary directory to original name*/
+    map<string, string>::iterator it;
     it = moveto_normal.find(string(full_path_arg));
     if(it != moveto_normal.end()){
         char command[BUFLEN];
@@ -227,6 +222,7 @@ void send_file(int sock_num, char *full_path_arg, char *path_arg, char *pure_pat
     
     /*THE FOLLOWING CODE SHOULD BE REMOVED IF USING THIS PROCEDURE OUTSIDE THIS FILE ...*/
 #ifdef BIGDIR
+    map<string, string>::iterator it;
     it = tar_names.find(string(event_name_arg));
     if(it != tar_names.end()) {
         printf("Handling tar %s\n", it->first.c_str());
@@ -264,8 +260,10 @@ void send_file(int sock_num, char *full_path_arg, char *path_arg, char *pure_pat
 }
 /*end of send_file*/
 
-void modify_file(char *full_path_arg, const char *event_name_arg, char *pure_path_arg, char *path_arg){
+void modify_file(char *full_path_arg, const char *event_name_arg, char *pure_path_arg, char *path_arg, int *watch_desc, int in_file_desc){
 
+    map<string, string>::iterator it;
+    map<string, string>::iterator it2;
     string helper_string;
     printf("FILMODIFY %s\n", full_path_arg);
     
@@ -284,10 +282,11 @@ void modify_file(char *full_path_arg, const char *event_name_arg, char *pure_pat
         printf("Adding watches for subdirectories of %s\n", helper_string.c_str());
         char arg[BUFLEN];
         strncpy(arg, it->second.c_str(), BUFLEN);
-        recursive_add_watch(arg);
+        add_watches_to_subdirs(arg, watch_desc, in_file_desc);
     }
 #endif
     
+    map<string, string>::iterator current_bigdir;
     printf("Searching for %s in tar_names\n", event_name_arg);
     current_bigdir = tar_names.find(string(event_name_arg));
     
@@ -345,9 +344,9 @@ void create_dir(char *full_path_arg, char *path_arg, char *curr_dir_arg, const c
     dir_list_state[dir_list_index] = true;
     
     strncpy(dir_list[dir_list_index], full_path_arg, BUFLEN);
-    wd[dir_list_index] = inotify_add_watch(fd, dir_list[dir_list_index],
+    watch_desc[dir_list_index] = inotify_add_watch(fd, dir_list[dir_list_index],
         IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
-        if (wd[dir_list_index] == -1) {
+        if (watch_desc[dir_list_index] == -1) {
             fprintf(stderr, "Cannot watch '%s'\n", dir_list[dir_list_index]);
             perror("inotify_add_watch");
             exit(EXIT_FAILURE);
@@ -412,8 +411,7 @@ void move_from(char *full_path_arg, char *path_arg, char *ptr_arg, const struct 
         send_string(sock_num, "BIGDELETE", "BIGDELETE_MSG");
         send_ch_arr(sock_num, path_arg, "BIGDELETE_DATA");
         
-        /*mark the place of old watch as free,
-        inotify_rm_watch when invoked gives invalid argument error*/
+        /*mark the place of old watch as free*/
         for(int k=0; k<MAX_DIRS; k++)
             if(!strcmp(full_path_arg, dir_list[k]))
                 dir_list_state[k] = false;
@@ -432,7 +430,7 @@ void move_from(char *full_path_arg, char *path_arg, char *ptr_arg, const struct 
 }
 /*end of move_from*/
 
-void move_to(char *full_path_arg, char *path_arg, const struct inotify_event *event_arg){
+void move_to(char *full_path_arg, char *path_arg, const struct inotify_event *event_arg, int *watch_desc, int in_file_desc){
     bool found_corresp_cookie = false;
     
     for(int j=0; j<MAX_RENAMED_FILES; j++) {
@@ -473,14 +471,14 @@ void move_to(char *full_path_arg, char *path_arg, const struct inotify_event *ev
                     outdated_dir = strstr(dir_list_slash, old_name_slash);
                     if(outdated_dir) {
                         printf("Removing watch %s\n", outdated_dir);
-                        result = inotify_rm_watch(fd, wd[k]);
+                        result = inotify_rm_watch(in_file_desc, watch_desc[k]);
                         if(result < 0) perror("inotify_rm_watch");
                         else dir_list_state[k] = false;
                     }
                 }
                 free(dir_list_slash);
                 free(old_name_slash);
-                recursive_add_watch(full_path_arg);
+                add_watches_to_subdirs(full_path_arg, watch_desc, in_file_desc);
             }
             break;
         }
@@ -503,17 +501,10 @@ void move_to(char *full_path_arg, char *path_arg, const struct inotify_event *ev
 }
 /*end of move_to*/
 
-static void handle_events(int fd, int *wd) {
-    /* Some systems cannot read integer variables if they are not
-      properly aligned. On other systems, incorrect alignment may
-      decrease performance. Hence, the buffer used for reading from
-      the inotify file descriptor should have the same alignment as
-      struct inotify_event. - that's not my idea ;) Franz*/
+static void handle_events(int in_file_desc, int *watch_desc) {
 
-    char buf[4096]
-    __attribute__ ((aligned(__alignof__(struct inotify_event))));
+    char buf[4096];
     const struct inotify_event *event;
-    int i;
     ssize_t len;
     char *ptr;
     char *curr_dir;
@@ -529,7 +520,7 @@ static void handle_events(int fd, int *wd) {
 
         /* Read some events. */
 
-        len = read(fd, buf, sizeof buf);
+        len = read(in_file_desc, buf, sizeof buf);
         if (len == -1 && errno != EAGAIN) {
             perror("read");
             exit(EXIT_FAILURE);
@@ -565,8 +556,8 @@ static void handle_events(int fd, int *wd) {
                     moveto_special.size(), moveto_normal.size(), tar_names.size());
                 
                 /*find dir where the change happened*/
-                for (i = 0; i < MAX_DIRS; ++i) {
-                    if (wd[i] == event->wd) {
+                for (int i=0; i<MAX_DIRS; ++i) {
+                    if (watch_desc[i] == event->wd) {
                         curr_dir = dir_list[i];
                         break;
                     }
@@ -601,7 +592,7 @@ static void handle_events(int fd, int *wd) {
             }
             
             if (event->mask & IN_CLOSE_WRITE)
-                modify_file(full_path, event->name, pure_path, path);
+                modify_file(full_path, event->name, pure_path, path, watch_desc, in_file_desc);
             
             if (event->mask & IN_CREATE) {
                 if(event->mask & IN_ISDIR)
@@ -615,7 +606,7 @@ static void handle_events(int fd, int *wd) {
                     printf("DIRMOVETO %s (cookie=%d)\n", full_path, event->cookie);
                 else
                     printf("FILMOVETO %s (cookie=%d)\n", full_path, event->cookie);
-                move_to(full_path, path, event);
+                move_to(full_path, path, event, watch_desc, in_file_desc);
             } if(event->mask & IN_MOVED_FROM){
             	if(event->mask & IN_ISDIR)
             	    printf("DIRMOVEFR %s\n", full_path);
@@ -629,10 +620,9 @@ static void handle_events(int fd, int *wd) {
 /*end of handle_events*/
 
 int main(int argc, char* argv[]) {
-    char buf;
-    int poll_num;
     nfds_t nfds;
     struct pollfd fds[2];
+    int in_file_desc;
 
     setbuf(stdout, NULL);
 
@@ -647,8 +637,8 @@ int main(int argc, char* argv[]) {
     printf("Press ENTER key to terminate.\n");
 
     /* Create the file descriptor for accessing the inotify API */
-    fd = inotify_init1(IN_NONBLOCK);
-    if (fd == -1) {
+    in_file_desc = inotify_init1(IN_NONBLOCK);
+    if (in_file_desc == -1) {
         perror("inotify_init1");
         exit(EXIT_FAILURE);
     }
@@ -667,7 +657,8 @@ int main(int argc, char* argv[]) {
 		exit(EXIT_FAILURE);
     }
 
-    wd = new int[MAX_DIRS];
+    int *watch_desc;
+    watch_desc = new int[MAX_DIRS];
 
     dir_list = new char*[MAX_DIRS];
     for(int i=0; i<MAX_DIRS; i++){
@@ -675,24 +666,21 @@ int main(int argc, char* argv[]) {
         dir_list_state[i] = false;
     }
         
-    recursive_add_watch(argv[1]);
-
-    /* Prepare for polling */
+    add_watches_to_subdirs(argv[1], watch_desc, in_file_desc);
 
     nfds = 2;
 
     /* Console input */
-
     fds[0].fd = STDIN_FILENO;
     fds[0].events = POLLIN;
 
     /* Inotify input */
-
-    fds[1].fd = fd;
+    fds[1].fd = in_file_desc;
     fds[1].events = POLLIN;
 
     /* Wait for events and/or terminal input */
-
+    char buf;
+    int poll_num;
     printf("Listening for events.\n");
     while (1) {
         poll_num = poll(fds, nfds, -1);
@@ -705,7 +693,6 @@ int main(int argc, char* argv[]) {
 
         if (poll_num > 0) {
             if (fds[0].revents & POLLIN) {
-
                 /* Console input is available. Empty stdin and quit */
                 while (read(STDIN_FILENO, &buf, 1) > 0 && buf != '\n')
                     continue;
@@ -713,9 +700,8 @@ int main(int argc, char* argv[]) {
             }
             
             if (fds[1].revents & POLLIN) {
-
                 /* Inotify events are available */
-                handle_events(fd, wd);
+                handle_events(in_file_desc, watch_desc);
             }
         } 
     }
@@ -726,7 +712,7 @@ int main(int argc, char* argv[]) {
     for(int i=0; i<MAX_DIRS; i++)
         delete [] dir_list[i];
     delete [] dir_list;
-    delete [] wd;
-    close(fd);
+    delete [] watch_desc;
+    close(in_file_desc);
     exit(EXIT_SUCCESS);
 }
