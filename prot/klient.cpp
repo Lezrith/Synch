@@ -3,6 +3,10 @@ KNOWN ISSUES:
  - segfaults when buffer length increased to e.g. 4096 or 8192
  - handling the situation when many dirs are MOVED_TO instantly is not perfect
    and may generate errors and data inconsistency, especially at server's side
+ - compiling without BIGDIR doesn't work anymore because we'll probably use it anyway
+   code is left just in case
+ - when MOVING_TO dir XYZ, it is untarred not into XYZ but XYZ/XYZ;
+   this will have to be fixed together with the way dirs are tarred
 */
 
 #include <errno.h>
@@ -14,6 +18,7 @@ KNOWN ISSUES:
 #include <string.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <math.h>
@@ -48,8 +53,6 @@ KNOWN ISSUES:
 
 #define BIGDIR
 
-const char *BIGDIR_SPECIAL_NAME = "special_name.tar";
-const char *SPECIAL_NAME_SUFFIX = "SPECIAL";
 const char *FIND_PATH = "/usr/bin/find";
 
 using namespace std;
@@ -106,7 +109,7 @@ void add_watches_to_subdirs(char *dir, int *watch_desc, int in_file_desc){
         for(int l=0;;l++) {
             if(l == BUFLEN-1){
                 printf("Warning: possible buffer overflow.\n");
-                continue;
+                break;
             }
             if(dir_list[index][l] == '\n') {
                 /* if there is a slash at the end of path 
@@ -144,18 +147,20 @@ char arr[BUFLEN];
 void send_ch_arr(int sock_num_arg, const char *arr, string msg_name){
     written = send(sock_num_arg, arr, BUFLEN, 0);
     printf("%s: written = %d\n", msg_name.c_str(), written);
+    if(written < 0)
+        exit(EXIT_FAILURE);
 }
 
 void send_ch_arr_size(int sock_num_arg, const char *arr, string msg_name, int size){
     written = send(sock_num_arg, arr, size, 0);
     printf("%s: written = %d\n", msg_name.c_str(), written);
+    if(written < 0)
+        exit(EXIT_FAILURE);
 }
 
 /*string_to_send can have at most BUFLEN bytes, if it is longer, it'll be truncated*/
 void send_string(int sock_num_arg, string string_to_send, string msg_name){
-    strncpy(arr, string_to_send.c_str(), BUFLEN);
-    written = send(sock_num_arg, arr, BUFLEN, 0);
-    printf("%s: written = %d\n", msg_name.c_str(), written);
+    send_ch_arr(sock_num_arg, string_to_send.c_str(), msg_name);
 }
 
 void delete_dir(char *full_path_arg, char *path_arg){
@@ -196,29 +201,31 @@ void delete_file(char *full_path_arg, char *path_arg){
 void send_file(int sock_num, char *full_path_arg, char *path_arg, char *pure_path_arg, const char *event_name_arg){
 
     /*TODO the file should possibly be locked in order to prevent data corruption*/
-    /*compute how many chunks will it take to transfer the file*/
-    FILE *fp=fopen(full_path_arg, "r");
-    int filesize; /*max. size = 2 GiB*/
+    /*check file size and number of chunks to send*/
     int chunks;
-    if(fp == NULL){
-        perror("fopen");
-        return;
+    struct stat tr_file;
+    if (stat(full_path_arg, &tr_file) == -1) {
+        char err_msg[BUFLEN];
+        snprintf(err_msg, BUFLEN, "Error while sending file %s: stat", full_path_arg);
+        perror(err_msg);
+        exit(EXIT_FAILURE);
     }
-    fseek(fp, 0L, SEEK_END);
-    filesize = ftell(fp);
-    if(filesize < 0)
-        printf("Warning: integer overflow.\n");
-    fclose(fp);
-    chunks = 1 + filesize/BUFLEN;
-    
+    long long filesize;
+    filesize = tr_file.st_size;
+    chunks = ceil((float)filesize/(float)BUFLEN);
     
     /*transfer the file*/
-    int fd = open(full_path_arg,O_RDONLY);
-    if(fd < 0) perror("open");
+    int fd = open(full_path_arg, O_RDONLY);
+    if(fd < 0){
+        char err_msg[BUFLEN];
+        snprintf(err_msg, BUFLEN, "Error while opening %s", full_path_arg);
+        perror(err_msg);
+        exit(EXIT_FAILURE);
+    }
     char chunk_arr[BUFLEN];
     char databuf[BUFLEN];
     int read_succ;
-    printf("file_size=%d chunks=%d\n", filesize, chunks);
+    printf("file_size=%lld chunks=%d\n", filesize, chunks);
     
     /*THE FOLLOWING CODE SHOULD BE REMOVED IF USING THIS PROCEDURE OUTSIDE THIS FILE ...*/
 #ifdef BIGDIR
@@ -330,7 +337,7 @@ void modify_file(char *full_path_arg, const char *event_name_arg, char *pure_pat
 }
 /*end of modify_file*/
 
-void create_dir(char *full_path_arg, char *path_arg, char *curr_dir_arg, const char *event_name_arg){
+void create_dir(char *full_path_arg, char *curr_dir_arg, const char *event_name_arg){
 
 #ifndef BIGDIR
     /*when using BIGDIR, directories (even empty) are tarred and transferred 
@@ -356,16 +363,24 @@ void create_dir(char *full_path_arg, char *path_arg, char *curr_dir_arg, const c
     
 #endif
 #ifdef BIGDIR
-       
-    /*wait some time until copying of big dir finishes, 
-    if dirs are rather big, this time should be long too!*/
-    usleep(1000000);
-
+    /*wait for copied dir to be flushed to disk*/
+    sync();
+    
     /*tar the big dir*/
     strncpy(bigdir, curr_dir_arg, BUFLEN);
     char command[BUFLEN];
     char tar_name[BUFLEN];
-    snprintf(tar_name, BUFLEN, "%s%s", event_name_arg, BIGDIR_SPECIAL_NAME);
+    
+    /*get the name for temporary file*/
+    snprintf(tar_name, BUFLEN, "%sXXXXXX", event_name_arg);
+    int fd = mkstemp(tar_name);
+    if(fd < 0)
+        perror("mkstemp");
+    close(fd);
+    
+    /*mkstemp creates file which we don't need*/
+    unlink(tar_name);
+    
     snprintf(command, BUFLEN, "cd \"%s\" && tar -cf \"%s\" \"%s\"", 
         curr_dir_arg, tar_name, event_name_arg);
     tar_names.insert(pair<string, string>(string(tar_name), string(full_path_arg)));
@@ -490,7 +505,11 @@ void move_to(char *full_path_arg, char *path_arg, const struct inotify_event *ev
     if(!found_corresp_cookie){
         char command[BUFLEN];
         char moved_special_name[BUFLEN];
-        snprintf(moved_special_name, BUFLEN, "%s%s", full_path_arg, SPECIAL_NAME_SUFFIX);
+        
+        /*get the name of temporary directory*/
+        snprintf(moved_special_name, BUFLEN, "%sXXXXXX", full_path_arg);
+        mkdtemp(moved_special_name);
+        
         printf("copying %s to %s\n", full_path_arg, moved_special_name);
         snprintf(command, BUFLEN, "cp -r \"%s\" \"%s\"", full_path_arg, moved_special_name);
         system(command);
@@ -508,18 +527,15 @@ static void handle_events(int in_file_desc, int *watch_desc) {
     ssize_t len;
     char *ptr;
     char *curr_dir;
-    char path[BUFLEN];
+    char *path;
     char pure_path[BUFLEN];
     char full_path[BUFLEN];
     char *buf_ptr = buf;
 
-
     /* Loop while events can be read from inotify file descriptor. */
-
     for (;;) {
 
         /* Read some events. */
-
         len = read(in_file_desc, buf, sizeof buf);
         if (len == -1 && errno != EAGAIN) {
             perror("read");
@@ -529,21 +545,17 @@ static void handle_events(int in_file_desc, int *watch_desc) {
         /* If the nonblocking read() found no events to read, then
           it returns -1 with errno set to EAGAIN. In that case,
           we exit the loop. */
-
         if (len <= 0)
             break;
 
         /* Loop over all events in the buffer */
-
         for (ptr = buf; ptr < buf + len;
             ptr += sizeof(struct inotify_event) + event->len) {
 
             event = (const struct inotify_event *) ptr;
 
-            for(int a=0; a<BUFLEN; a++){
-                path[a] = 0;
+            for(int a=0; a<BUFLEN; a++)
                 pure_path[a] = 0;
-            }
             
             if((event->mask & IN_DELETE) ||
                (event->mask & IN_CLOSE_WRITE) ||
@@ -563,7 +575,6 @@ static void handle_events(int in_file_desc, int *watch_desc) {
                     }
                 }
                 
-                /*possible redundancy in code determining pure_path and path*/
                 /*extract only relative directory path of event (without filename at the end)*/
                 int j = 0;
                 for(int i=0; i<BUFLEN; i++){
@@ -573,15 +584,10 @@ static void handle_events(int in_file_desc, int *watch_desc) {
                     j++;
                 }
                 
-                if (event->len){
+                if (event->len)
                     snprintf(full_path, BUFLEN, "%s/%s", curr_dir, event->name);
-                    
-                    /*get relative path by removing parent directories from program's root dir*/
-                    int x, y;
-                    for(x=root_length, y=0; full_path[x]!=0; x++, y++)
-                        path[y] = full_path[x];
-                }
-                printf("pure_path = %s\npath=%s\n",pure_path,path);
+                path = full_path + root_length;
+                printf("pure_path = %s\npath=%s\n", pure_path, path);
             }
 
             if (event->mask & IN_DELETE) {
@@ -596,7 +602,7 @@ static void handle_events(int in_file_desc, int *watch_desc) {
             
             if (event->mask & IN_CREATE) {
                 if(event->mask & IN_ISDIR)
-                    create_dir(full_path, path, curr_dir, event->name);
+                    create_dir(full_path, curr_dir, event->name);
                 else
                     create_file(full_path, path);
             } 
@@ -620,35 +626,44 @@ static void handle_events(int in_file_desc, int *watch_desc) {
 /*end of handle_events*/
 
 int main(int argc, char* argv[]) {
-    nfds_t nfds;
-    struct pollfd fds[2];
-    int in_file_desc;
+
+    if (argc < 4) {
+        printf("Usage: %s PATH IP PORT\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+    
+    struct sockaddr_in temp;
+    if(inet_pton(AF_INET, argv[2], &(temp.sin_addr)) == 0){
+        printf("Not a valid IP address.\n");
+        exit(EXIT_FAILURE);
+    }
+    int port_num = atoi(argv[3]);
+    if(!(port_num > 1023 && port_num < 65536)){
+        printf("Not allowed port number.\n");
+        exit(EXIT_FAILURE);
+    }
 
     setbuf(stdout, NULL);
 
     for(int i=0; i<MAX_RENAMED_FILES; i++)
         renamed_files[i].cookie=-1;
-    
-    if (argc < 4) {
-        printf("Usage: %s PATH IP PORT\n", argv[0]);
-        exit(EXIT_FAILURE);
-    }
 
     printf("Press ENTER key to terminate.\n");
 
     /* Create the file descriptor for accessing the inotify API */
+    int in_file_desc;
     in_file_desc = inotify_init1(IN_NONBLOCK);
     if (in_file_desc == -1) {
         perror("inotify_init1");
         exit(EXIT_FAILURE);
     }
     
-    /*connect ot server*/
+    /*connect to server*/
     struct sockaddr_in soc_add;
 	soc_add.sin_family = AF_INET;
 	soc_add.sin_addr.s_addr = inet_addr(argv[2]);
-	soc_add.sin_port = htons(atoi(argv[3]));
-	if((sock_num = socket(AF_INET, SOCK_STREAM,0)) < 0) {
+	soc_add.sin_port = htons(port_num);
+	if((sock_num = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
 		perror("socket");
 		exit(EXIT_FAILURE);
     }
@@ -668,7 +683,9 @@ int main(int argc, char* argv[]) {
         
     add_watches_to_subdirs(argv[1], watch_desc, in_file_desc);
 
+    nfds_t nfds;
     nfds = 2;
+    struct pollfd fds[2];
 
     /* Console input */
     fds[0].fd = STDIN_FILENO;
