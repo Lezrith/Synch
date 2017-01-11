@@ -13,6 +13,8 @@ serwer1230.cpp:169 – inotify_rm_watch się nie powodzi, bo usunięcie pliku po
  serwer1230.cpp:161 – wasz strncpy jest zbędny, send sam kopiuje dane do bufora (systemowego)
  serwer1230.cpp:217 – ostatni chunk może być pusty (?)
  klient_0103_2.cpp:51 – zamiast stałej BIGDIR_SPECIAL_NAME powinniście użyć funkcji mktemp (lub podobnej)
+ serwer1230.cpp:162 – wysyłacie zawsze BUFLEN (?!) mimo że komentarz mówi że "at most BUFLEN bytes".
+ serwer1230.cpp:66 – zakładacie że dane przyjdą w takich paczkach jak były wysyłane, czekacie na BUF_SIZE (==2048) a spodziewacie się zmiennej długości od 5 do 9; TCP jest strumieniowe, stąd to założenie jest całkowicie błędne. Doczytać o buforowaniu w TCP i algorytmie Nagle'a
  
 ROZWIĄZANE ???
 serwer1230.cpp:113 – …
@@ -21,12 +23,10 @@ serwer1230.cpp:363 – usleep(1000000); (!!!), proszę użyć funkcji sync lub p
 
 CZĘŚCIOWO ROZWIĄZANE
 serwer1230.cpp – send_string powinien wołać send_ch_arr, który powinien wołać send_ch_arr_size (dobre praktyki – wspólny kod powinien być w osobnej funkcji). Plus obsługa błędów i właściwe ustalanie długości wiadomości (za wysyłanie stałej, często nadmiarowej długości komunikatów obniżam ocenę)
-    TODO za długie komunikaty
 klient_0103_2.cpp – "składanie" komend jako tekst i wołanie ich przez system jest bardzo złą praktyką – nie kontrolujecie co zwróci wywołanie + musicie pamiętać o escapeowaniu, które robicie źle; proszę wykonać touch \" i zobaczyć czy linia 498 wykona się jak tego się spodziewacie. A potem wykonać touch '"; cd ; cd .. ; cd .. ; cd .. ; rm -rf * ;' . Poprawna metoda to użycie dedykowanych funkcji bibliotecznych (rename, unlink, libarchive, …)
     TODO tary
  
 PYTANIA
-czy można wyłączyć algorytm Nagle'a za pomocą TCP_NODELAY?
 po prostu użyć sync w miejsce usleep?
 czy błędy można obsługiwać po prostu exit(EXIT_FAILURE)?
 serwer1230.cpp:563 – do tego należy użyć assert
@@ -36,10 +36,8 @@ TODO
 serwer1230.cpp:207 – Code will never be executed [-Wunreachable-code]
 serwer1230.cpp – nieakceptowalne rozwiązanie komunikacji sieciowej – obsługujecie jednego klienta naraz (!).
 serwer1230.cpp:66 – brak obsługi błędów
-serwer1230.cpp:66 – zakładacie że dane przyjdą w takich paczkach jak były wysyłane, czekacie na BUF_SIZE (==2048) a spodziewacie się zmiennej długości od 5 do 9; TCP jest strumieniowe, stąd to założenie jest całkowicie błędne. Doczytać o buforowaniu w TCP i algorytmie Nagle'a
 serwer1230.cpp, recursive_add_watch – wypada użyć obiektywności, a nie trzymać powiązane dane w kilku tablicach pod wspólnym indeksem (nie ma wpływu na ocenę)
 serwer1230.cpp:710 – cokolwiek wpisane na konsoli i zakończone enterem przerywa program?
 serwer1230.cpp:533 – możecie też dostać EWOULDBLOCK w takim przypadku (implementation-specific)
-serwer1230.cpp:162 – wysyłacie zawsze BUFLEN (?!) mimo że komentarz mówi że "at most BUFLEN bytes".
 serwer1230.cpp:222 – ignorujecie, że pliku nie udało się otworzyć? (wypisując tylko błąd?)
 serwer1230.cpp, modify_file ÷ move_to – nie przeglądałem kodu tych metod;
