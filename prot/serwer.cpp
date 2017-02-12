@@ -1,6 +1,3 @@
-/*TODO: move receiving code into procedures*/
-
-
 #include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,15 +9,26 @@
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <string.h>
-#include <archive.h>
-#include <archive_entry.h>
 #define BUFLEN 2048
 #define QUEUE_SIZE 1
 using namespace std;
 
-void clear_buf(char *buf){
+char *data;
+char *data2;
+
+/* in case of error returns negative number, otherwise number of bytes received*/
+int receive_message(int sock_arg, char *data_arg){
+    int value;
+    int *ptr = &value;  
+    int received;
+    if((received = recv(sock_arg, ptr, sizeof(int), 0)) == 0) return -1;
+    printf("received=%d bytes=%d\n", received, *ptr);
     for(int i=0; i<BUFLEN; i++)
-        buf[i] = 0;
+        data_arg[i] = 0;
+    if((received = recv(sock_arg, data_arg, *ptr, 0)) == 0) return -2;
+    if(*ptr < 256)
+        printf("received=%d message=%s\n", received, data_arg);
+    return *ptr;
 }
 
 int main(int argc, char **argv) {
@@ -41,8 +49,8 @@ int main(int argc, char **argv) {
     }
     
 	char connect_info[BUFLEN];
-    char *data = (char *)calloc(BUFLEN, sizeof(char));
-    char *data2 = (char *)calloc(BUFLEN, sizeof(char));
+    data = (char *)calloc(BUFLEN, sizeof(char));
+    data2 = (char *)calloc(BUFLEN, sizeof(char));
     struct sockaddr_in soc_add, stClientAddr;
 	soc_add.sin_family = AF_INET;
 	soc_add.sin_addr.s_addr = inet_addr(argv[2]);
@@ -62,13 +70,13 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
     socklen_t nTmp = sizeof(struct sockaddr);
-    int received;
     char root_path[BUFLEN];
     char file[BUFLEN];
     char temp_name[BUFLEN];
+    char message_type[BUFLEN];
     struct stat helper;
     
-    /*remove slash from the end of root directory*/
+    /* remove slash from the end of root directory */
     for (int i=0; i<BUFLEN; i++)
         if(argv[1][i] == 0){
             if(root_path[i-1] == '/')
@@ -79,8 +87,8 @@ int main(int argc, char **argv) {
     printf("root_path=%s\n",root_path);
         
     while(1) {
-        int nClientSocket = accept(sock_num, (struct sockaddr*)&stClientAddr, &nTmp);
-        if(nClientSocket < 0){
+        int client_sock_num = accept(sock_num, (struct sockaddr*)&stClientAddr, &nTmp);
+        if(client_sock_num < 0){
             perror("accept");
             exit(EXIT_FAILURE);
         }
@@ -90,22 +98,15 @@ int main(int argc, char **argv) {
             inet_ntoa((struct in_addr)stClientAddr.sin_addr), stClientAddr.sin_port);
         write(1, connect_info, n);
         bool exit_outer_loop = false;
-        int value;
-        int *ptr = &value;
+        
         while(!exit_outer_loop){
             printf("===============================\n");
-            if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-            printf("received=%d bytes=%d\n", received, *ptr);
-            clear_buf(data);
-            if((received = recv(nClientSocket, data, *ptr, 0)) == 0) break;
-            printf("received=%d msg=%s\n", received, data);
-            
-            if(!strcmp(data,"DIRCREATE")){
-                if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                printf("received=%d bytes=%d\n", received, *ptr);
-                clear_buf(data);
-                if((received = recv(nClientSocket, data, BUFLEN, 0)) == 0) break;
-                printf("received=%d dirname=%s\n", received, data);
+            if(receive_message(client_sock_num, data) < 0)
+                break;
+            strncpy(message_type, data, BUFLEN);
+            if(!strcmp(message_type, "DIRCREATE")){
+                if(receive_message(client_sock_num, data) < 0)
+                    break;
                 snprintf(file, BUFLEN, "%s/%s", root_path, data);
                 if (stat(file, &helper) < 0)
                     mkdir(file, 0755);
@@ -113,12 +114,9 @@ int main(int argc, char **argv) {
                     printf("Directory already exists!\n");
             } 
             
-            else if(!strcmp(data,"FILCREATE")){
-                if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                printf("received=%d bytes=%d\n", received, *ptr);
-                clear_buf(data);
-                if((received = recv(nClientSocket, data, *ptr, 0)) == 0) break;
-                printf("received=%d filname=%s\n", received, data);
+            else if(!strcmp(message_type, "FILCREATE")){
+                if(receive_message(client_sock_num, data) < 0)
+                    break;
                 snprintf(file, BUFLEN, "%s/%s", root_path, data);
                 if (stat(file, &helper) < 0)
                     open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -126,12 +124,9 @@ int main(int argc, char **argv) {
                     printf("File already exists!\n");
             } 
             
-            else if(!strcmp(data,"FILDELETE")){
-                if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                printf("received=%d bytes=%d\n", received, *ptr);
-                clear_buf(data);
-                if((received = recv(nClientSocket, data, *ptr, 0)) == 0) break;
-                printf("received=%d filname=%s\n", received, data);
+            else if(!strcmp(message_type, "FILDELETE")){
+                if(receive_message(client_sock_num, data) < 0)
+                    break;
                 snprintf(file, BUFLEN, "%s/%s", root_path, data);
                 if (stat(file, &helper) == 0)
                     unlink(file);
@@ -139,12 +134,9 @@ int main(int argc, char **argv) {
                     printf("File doesn't exist!\n");
             } 
             
-            else if(!strcmp(data,"DIRDELETE")){
-                if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                printf("received=%d bytes=%d\n", received, *ptr);
-                clear_buf(data);
-                if((received = recv(nClientSocket, data, *ptr, 0)) == 0) break;
-                printf("received=%d dirname=%s\n", received, data);
+            else if(!strcmp(message_type, "DIRDELETE")){
+                if(receive_message(client_sock_num, data) < 0)
+                    break;
                 snprintf(file, BUFLEN, "%s/%s", root_path, data);
                 if (stat(file, &helper) == 0)
                     rmdir(file);
@@ -152,31 +144,25 @@ int main(int argc, char **argv) {
                     printf("Directory doesn't exist!\n");
             }
             
-            else if(!strcmp(data,"BIGDELETE")){
-                /*for now server just deletes whole directory,
+            /* begin of FIXME */
+            else if(!strcmp(message_type, "BIGDELETE")){
+                /* for now server just deletes whole directory,
                 when it will be serving many clients, server will have to solve conflicts
                 inside this directory */
-                /*calling system function isn't fixed, because in the end it won't be done this way*/
-                if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                printf("received=%d bytes=%d\n", received, *ptr);
-                clear_buf(data);
-                if((received = recv(nClientSocket, data, *ptr, 0)) == 0) break;
-                printf("received=%d dirname=%s\n", received, data);
+                /* calling system function isn't fixed, because in the end
+                it won't be done this way */
+                if(receive_message(client_sock_num, data) < 0)
+                    break;
                 snprintf(file,BUFLEN,"rm -r \"%s/%s\"", root_path, data);
                 system(file);
-            } 
+            }
+            /* end of FIXME */
             
-            else if(!strcmp(data,"MOVED")){
-                if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                printf("received=%d bytes=%d\n", received, *ptr);
-                clear_buf(data);
-                if((received = recv(nClientSocket, data, *ptr, 0)) == 0) break;
-                printf("received=%d moved_from=%s\n", received, data);
-                if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                printf("received=%d bytes=%d\n", received, *ptr);
-                clear_buf(data2);
-                if((received = recv(nClientSocket, data2, *ptr, 0)) == 0) break;
-                printf("received=%d moved_to=%s\n", received, data2);
+            else if(!strcmp(message_type, "MOVED")){
+                if(receive_message(client_sock_num, data) < 0)
+                    break;
+                if(receive_message(client_sock_num, data2) < 0)
+                    break;
                 char file_2[BUFLEN];
                 snprintf(file, BUFLEN, "%s/%s", root_path, data);
                 snprintf(file_2, BUFLEN, "%s/%s", root_path, data2);
@@ -186,70 +172,59 @@ int main(int argc, char **argv) {
                     rename(file, file_2);
             } 
             
-            else if(!strcmp(data,"FILMODIFY") || !strcmp(data,"BIGDIR")){
+            else if(!strcmp(message_type, "FILMODIFY") || !strcmp(message_type, "BIGDIR")){
                 bool bigdir_arrived = false;
                 char bigdir_path[BUFLEN];
                 
-                if(!strcmp(data,"BIGDIR")) { 
-                    /*receive what is the real name of this big dir*/
+                /* begin of FIXME */
+                if(!strcmp(message_type, "BIGDIR")) { 
+                    /* receive what is the real name of this big dir */
                     bigdir_arrived = true;
-                    if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                    printf("received=%d bytes=%d\n", received, *ptr);
-                    clear_buf(data);
-                    if((received = recv(nClientSocket, data, *ptr, 0)) == 0){
+                    if(receive_message(client_sock_num, data) < 0){
                         printf("The client has disconnected.\n");
                         break;
                     }
-                    printf("received=%d bigdir_path=%s\n",received,data);
                     strncpy(bigdir_path, data, BUFLEN);
                 }
+                /* end of FIXME */
             
-                /*open the file which is modified*/
-                if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                printf("received=%d bytes=%d\n", received, *ptr);
-                clear_buf(data);
-                if((received = recv(nClientSocket, data, *ptr, 0)) == 0){
+                /* open the file which is modified */
+                if(receive_message(client_sock_num, data) < 0){
                     printf("The client has disconnected.\n");
                     break;
                 }
-                printf("received=%d name=%s\n",received,data);
                 char file_path[BUFLEN];
                 if(bigdir_arrived)
                     snprintf(file_path, BUFLEN, "%s/%s/%s", root_path, bigdir_path, data);
                 else
-                    snprintf(file_path, BUFLEN, "%s/%s", root_path,data);
+                    snprintf(file_path, BUFLEN, "%s/%s", root_path, data);
                 snprintf(temp_name,BUFLEN, "%s",data);
                 int fd=open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
                 if(fd<0) perror("open");
                 
-                /*receive how many chunks are there going to be sent*/
-                if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                printf("received=%d bytes=%d\n", received, *ptr);
-                clear_buf(data);
-                if((received = recv(nClientSocket, data, *ptr, 0)) == 0){
+                /* receive how many chunks are there going to be sent */
+                if(receive_message(client_sock_num, data) < 0){
                     printf("The client has disconnected.\nData in file %s has been lost.\n", file_path);
                     close(fd);
                     break;
                 }
-                printf("received=%d\n",received);
                 int chunks = atoi(data);
                 printf("chunks = %d\n", chunks);
+                int bytes;
                 
                 for(int i=1; i<=chunks; i++){
-                        if((received = recv(nClientSocket, ptr, sizeof(int), 0)) == 0) break;
-                        printf("received=%d bytes=%d\n", received, *ptr);
-                        clear_buf(data);
-                        if((received = recv(nClientSocket, data, *ptr, 0)) == 0){
+                        if((bytes = receive_message(client_sock_num, data)) < 0){
                             printf("The client has disconnected during transfer.\n Data in file %s is likely to be corrupted.\n", file_path);
                             exit_outer_loop = true;
                             break;
                         }
-                        printf("received=%d chunk_number=%d\n", received, i);
-                        write(fd, data, *ptr);
+                        printf("chunk_number=%d\n", i);
+                        write(fd, data, bytes);
                 }
                 close(fd);
                 
-                /*extract the tar into real directory*/
+                /* begin of FIXME */
+                /* extract the tar into real directory */
                 if(bigdir_arrived){ 
                     printf("file_path=%s\n",file_path);
                     int last_slash = 0;
@@ -270,9 +245,10 @@ int main(int argc, char **argv) {
                     printf("untar command = %s\n", file);
                     system(file);
                 }
+                /* end of FIXME */
             }
         }
-        close(nClientSocket);
+        close(client_sock_num);
     }
     close(sock_num);
     free(data);
