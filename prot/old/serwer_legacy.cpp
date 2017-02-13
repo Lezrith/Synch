@@ -9,6 +9,8 @@
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <string.h>
+#include <archive.h>
+#include <archive_entry.h>
 #define BUFLEN 2048
 #define QUEUE_SIZE 1
 using namespace std;
@@ -27,10 +29,8 @@ int receive_message(int sock_arg, char *data_arg){
     for(int i=0; i<BUFLEN; i++)
         data_arg[i] = 0;
     while(total_received < to_be_received){
-        if((received = recv(sock_arg, data_arg+total_received*sizeof(char), to_be_received-total_received, 0)) == 0) return -2;
-        /* printing binary data may cause problems, left for testing with text data */
-        //printf("received=%d data=%s\n", received, data_arg);
-        printf("received=%d\n", received);
+        if((received = recv(sock_arg, data_arg, to_be_received-total_received, 0)) == 0) return -2;
+            printf("received=%d message=%s\n", received, data_arg);
         total_received += received;
     }
     return total_received;
@@ -180,6 +180,18 @@ int main(int argc, char **argv) {
             else if(!strcmp(message_type, "FILMODIFY") || !strcmp(message_type, "BIGDIR")){
                 bool bigdir_arrived = false;
                 char bigdir_path[BUFLEN];
+                
+                /* begin of FIXME */
+                if(!strcmp(message_type, "BIGDIR")) { 
+                    /* receive what is the real name of this big dir */
+                    bigdir_arrived = true;
+                    if(receive_message(client_sock_num, data) < 0){
+                        printf("The client has disconnected.\n");
+                        break;
+                    }
+                    strncpy(bigdir_path, data, BUFLEN);
+                }
+                /* end of FIXME */
             
                 /* open the file which is modified */
                 if(receive_message(client_sock_num, data) < 0){
@@ -215,6 +227,30 @@ int main(int argc, char **argv) {
                     write(fd, data, bytes);
                 }
                 close(fd);
+                
+                /* begin of FIXME */
+                /* extract the tar into real directory */
+                if(bigdir_arrived){ 
+                    printf("file_path=%s\n",file_path);
+                    int last_slash = 0;
+                    char dest_path[BUFLEN];
+                    int i;
+                    for(i=0; i<BUFLEN; i++){
+                        if(file_path[i] == '/')
+                            last_slash = i;
+                        if(file_path[i] == 0)
+                            break;
+                    }
+                    for(i=0; i<last_slash; i++)
+                        dest_path[i] = file_path[i];
+                    dest_path[i] = 0;
+                    printf("dest_path = %s\n",dest_path);
+                        snprintf(file, BUFLEN, "cd \"%s\" && tar -xf \"%s\"",
+                            dest_path, temp_name);
+                    printf("untar command = %s\n", file);
+                    system(file);
+                }
+                /* end of FIXME */
             }
         }
         close(client_sock_num);

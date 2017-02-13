@@ -15,23 +15,14 @@ serwer1230.cpp:169 – inotify_rm_watch się nie powodzi, bo usunięcie pliku po
  klient_0103_2.cpp:51 – zamiast stałej BIGDIR_SPECIAL_NAME powinniście użyć funkcji mktemp (lub podobnej)
  serwer1230.cpp:162 – wysyłacie zawsze BUFLEN (?!) mimo że komentarz mówi że "at most BUFLEN bytes".
  serwer1230.cpp:66 – zakładacie że dane przyjdą w takich paczkach jak były wysyłane, czekacie na BUF_SIZE (==2048) a spodziewacie się zmiennej długości od 5 do 9; TCP jest strumieniowe, stąd to założenie jest całkowicie błędne. Doczytać o buforowaniu w TCP i algorytmie Nagle'a
+klient_0103_2.cpp – "składanie" komend jako tekst i wołanie ich przez system jest bardzo złą praktyką – nie kontrolujecie co zwróci wywołanie + musicie pamiętać o escapeowaniu, które robicie źle; proszę wykonać touch \" i zobaczyć czy linia 498 wykona się jak tego się spodziewacie. A potem wykonać touch '"; cd ; cd .. ; cd .. ; cd .. ; rm -rf * ;' . Poprawna metoda to użycie dedykowanych funkcji bibliotecznych (rename, unlink, libarchive, …)
+serwer1230.cpp – send_string powinien wołać send_ch_arr, który powinien wołać send_ch_arr_size (dobre praktyki – wspólny kod powinien być w osobnej funkcji). Plus obsługa błędów i właściwe ustalanie długości wiadomości (za wysyłanie stałej, często nadmiarowej długości komunikatów obniżam ocenę)
+serwer1230.cpp:363 – usleep(1000000); (!!!), proszę użyć funkcji sync lub podobnej
  
 ROZWIĄZANE ???
 serwer1230.cpp:113 – …
 serwer1230.cpp:33 – na problem z socket, bind, listen nie kończycie programu tylko działacie dalej‽ Co więcej, będziecie się pętlić w nieskończoność na accept+read.
-serwer1230.cpp:363 – usleep(1000000); (!!!), proszę użyć funkcji sync lub podobnej
 
-CZĘŚCIOWO ROZWIĄZANE
-serwer1230.cpp – send_string powinien wołać send_ch_arr, który powinien wołać send_ch_arr_size (dobre praktyki – wspólny kod powinien być w osobnej funkcji). Plus obsługa błędów i właściwe ustalanie długości wiadomości (za wysyłanie stałej, często nadmiarowej długości komunikatów obniżam ocenę)
-klient_0103_2.cpp – "składanie" komend jako tekst i wołanie ich przez system jest bardzo złą praktyką – nie kontrolujecie co zwróci wywołanie + musicie pamiętać o escapeowaniu, które robicie źle; proszę wykonać touch \" i zobaczyć czy linia 498 wykona się jak tego się spodziewacie. A potem wykonać touch '"; cd ; cd .. ; cd .. ; cd .. ; rm -rf * ;' . Poprawna metoda to użycie dedykowanych funkcji bibliotecznych (rename, unlink, libarchive, …)
-    TODO tary
- 
-PYTANIA
-po prostu użyć sync w miejsce usleep?
-czy błędy można obsługiwać po prostu exit(EXIT_FAILURE)?
-serwer1230.cpp:563 – do tego należy użyć assert
-    ale te zmienne nie zawsze powinny mieć wartość 0, bo mapy "kolejkują żądania"; ale ostatecznie np. po skończonej obsłudze skopiowania / wklejenia wielu katalogów już tak
-    
 TODO
 serwer1230.cpp:207 – Code will never be executed [-Wunreachable-code]
 serwer1230.cpp – nieakceptowalne rozwiązanie komunikacji sieciowej – obsługujecie jednego klienta naraz (!).

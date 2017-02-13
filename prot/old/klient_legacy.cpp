@@ -1,3 +1,16 @@
+/*
+KNOWN ISSUES:
+ - segfaults when buffer length increased to e.g. 4096 or 8192
+ - when using BIGDIR:
+     * handling the situation when many dirs are MOVED_TO instantly is not perfect
+       and may generate errors and data inconsistency, especially at server's side
+     * when MOVING_TO dir XYZ, it is untarred not into XYZ but XYZ/XYZ;
+       this will have to be fixed together with the way dirs are tarred
+ - decide whether we'll use tars to send directories (BIGDIR) or something else;
+   we leave BIGDIR code, but it'll have to be fixed, especially in regard to sync(), usleep()
+   and invoking commands via system()
+*/
+
 #include <errno.h>
 #include <poll.h>
 #include <assert.h>
@@ -12,16 +25,39 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <math.h>
+#include <time.h>
 #include <string>
 #include <map>
 #include <iostream>
 #include <ftw.h>
 
 #define MAX_DIRS 4096
-#define MAX_RENAMED_FILES 32
+#define MAX_RENAMED_FILES 16
 #define BUFLEN 2048
 #define SMALLBUF 16
 #define FLAGS IN_CLOSE_WRITE | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO
+
+/*
+  BIGDIR tries to fix problems with inotify: when whole directory tree is created instantly,
+  inotify can't create watches for all subdirectories that fast, considering example directory tree:
+  a/b/
+  a/c/
+  a/d/
+  a/c/e
+  a/d/f
+  while watch for a/b/ is being created, all other files are written to disk, 
+  but there wasn't enough time to create watches for a/c/ and a/d/, 
+  so the creation of files inside them isn't detected
+  the solution is to tar whole directory a/, send it to server and servers untars it, 
+  after the tar is transferred, all watches inside a/ are created manually
+  various problems with inotify are described here: https://lwn.net/Articles/605128/
+  to see this problem just compile this program without BIGDIR defined and 
+  copy into any of watched directories a directory ('bigdir') with many subdirs
+  and many files (many >= 100) then compare the number of files
+  in original directory and in the (incompletely transferred) 'bigdir' on server
+*/
+
+//#define BIGDIR
 
 using namespace std;
 
@@ -36,6 +72,11 @@ bool dir_list_state[MAX_DIRS];
 char databuf[BUFLEN];
 map<string, string> moveto_special;
 map<string, string> moveto_normal;
+map<string, string> tar_names;
+
+#ifdef BIGDIR
+    char bigdir[BUFLEN];
+#endif
 
 /* points to an index where new watch can be created */
 int find_free_index(){
@@ -52,11 +93,11 @@ int find_free_index(){
     }
     return dir_list_index;
 }
+/* end of find_free_index */
 
 int *global_watch_desc;
 int global_in_file_desc;
 
-/* helper function for traversing directory tree - adds a watch to one directory */
 int add_wat(const char *filepath, const struct stat *info, 
                 const int typeflag, struct FTW *pathinfo){
     int index = find_free_index();
@@ -95,6 +136,7 @@ int add_wat(const char *filepath, const struct stat *info,
     return 0;
 }
 
+
 /* finds all subdirectories of dir and adds watches for them */
 void add_watches_to_subdirs(char *dir, int *watch_desc, int in_file_desc){
 
@@ -106,9 +148,8 @@ void add_watches_to_subdirs(char *dir, int *watch_desc, int in_file_desc){
         perror("nftw");
 
 }
+/* end of add_watches_to_subdirs */
 
-/* sends arr to sock_num_arg, prints debug information using msg_name 
-   if desired_length equals 0, length of array is checked, otherwise desired_length bytes is sent */
 void send_ch_arr(int sock_num_arg, const char *arr, string msg_name, int desired_length){
     int written;
     /* TODO client should try to reconect to server */
@@ -116,24 +157,23 @@ void send_ch_arr(int sock_num_arg, const char *arr, string msg_name, int desired
     int arr_len;
     if(desired_length == 0)
         for(arr_len = 0; arr[arr_len] != 0; arr_len++);
+    
     else
         arr_len = desired_length;
 
     int *ptr = &arr_len;
     assert(arr_len <= BUFLEN);
     
-    /* send number of bytes to be expected */
     printf("I'm going to send %d\n", *ptr);
     written = send(sock_num_arg, ptr, sizeof(int), 0);
     printf("%s: packet_size   written = %d \n", msg_name.c_str(), written);
     if(written < 0)
         exit(EXIT_FAILURE);
-    
-    /* send actual data */
     written = send(sock_num_arg, arr, arr_len, 0);
     printf("%s: actual_packet written = %d \n", msg_name.c_str(), written);
     if(written < 0)
         exit(EXIT_FAILURE);
+    
 }
 
 /* string_to_send can have at most BUFLEN bytes */
@@ -147,19 +187,39 @@ void delete_dir(char *full_path_arg, char *path_arg){
     for(int k=0; k<MAX_DIRS; k++)
         if(!strcmp(full_path_arg, dir_list[k]))
             dir_list_state[k] = false;
-
-    printf("DIRDELETE %s\n", full_path_arg);
-    send_string(sock_num, "DIRDELETE", "DIRDELETE_MSG");
-    send_ch_arr(sock_num, path_arg, "DIRDELETE_DATA", 0);
+         
+    /* begin of FIXME */
+    /* (1) after the normal MOVED_TO directory was deleted,
+    rename special-named temporary directory to original name */
+    map<string, string>::iterator it;
+    it = moveto_normal.find(string(full_path_arg));
+    if(it != moveto_normal.end()){
+        char command[BUFLEN];
+        printf("moving %s to %s\n", it->second.c_str(), it->first.c_str());
+        snprintf(command, BUFLEN, "mv \"%s\" \"%s\"", it->second.c_str(), it->first.c_str());
+        system(command);
+        moveto_normal.erase(it);
+    }
+    /* end of FIXME */
+    
+    /* server doesn't have the MOVED_TO dir, send him message only if it isn't such a dir */
+    else {
+        printf("DIRDELETE %s\n", full_path_arg);
+        send_string(sock_num, "DIRDELETE", "DIRDELETE_MSG");
+        send_ch_arr(sock_num, path_arg, "DIRDELETE_DATA", 0);
+    }
 }
+/* end of delete_dir */
 
 void delete_file(char *full_path_arg, char *path_arg){
     printf("FILDELETE %s\n", full_path_arg);
     send_string(sock_num, "FILDELETE", "FILDELETE_MSG");
     send_ch_arr(sock_num, path_arg, "FILDELETE_DATA", 0);
 }
+/* end of delete_file */
 
-void send_file(int sock_num, char *full_path_arg, char *path_arg){
+void send_file(int sock_num, char *full_path_arg, char *path_arg,
+               char *pure_path_arg, const char *event_name_arg){
 
     /* TODO the file should possibly be locked in order to prevent data corruption */
     /* check file size and number of chunks to send */
@@ -187,8 +247,33 @@ void send_file(int sock_num, char *full_path_arg, char *path_arg){
     int read_succ;
     printf("file_size=%lld chunks=%d\n", filesize, chunks);
     
+    /* begin of FIXME */
+    /* THE FOLLOWING CODE SHOULD BE REMOVED IF USING THIS PROCEDURE OUTSIDE THIS FILE ... */
+#ifdef BIGDIR
+    map<string, string>::iterator it;
+    it = tar_names.find(string(event_name_arg));
+    if(it != tar_names.end()) {
+        printf("Handling tar %s\n", it->first.c_str());
+        send_string(sock_num, "BIGDIR", "BIGDIR_MSG");
+        printf("pure_path_arg = %s\n", pure_path_arg);
+        send_ch_arr(sock_num, pure_path_arg, "BIGDIR_PATH", BUFLEN);
+        
+        /* don't send tar's path, beacuse server when untars it changes
+        directory anyway so sending whole path would generate error */
+        send_string(sock_num, it->first, "BIGDIR_NAME");
+    }
+    else {
+        send_string(sock_num, "FILMODIFY", "FILMODIFY_MSG");
+        send_ch_arr(sock_num, path_arg, "FILMODIFY_NAME", BUFLEN);
+    }
+#endif
+    /* ... UNTIL HERE, THEN REMOVE TWO COMPILER DIRECTIVES BELOW */
+    /* end of FIXME */
+    
+#ifndef BIGDIR
     send_string(sock_num, "FILMODIFY", "FILMODIFY_MSG");
     send_ch_arr(sock_num, path_arg, "FILMODIFY_NAME", 0);
+#endif
     snprintf(chunk_arr, SMALLBUF, "%d;", chunks);
     string number_str = string(chunk_arr);
     size_t number_len = number_str.find(";");
@@ -203,37 +288,89 @@ void send_file(int sock_num, char *full_path_arg, char *path_arg){
     }
     close(fd);
 }
+/* end of send_file */
 
-void modify_file(char *full_path_arg, char *path_arg){
+void modify_file(char *full_path_arg, const char *event_name_arg, char *pure_path_arg,
+                 char *path_arg, int *watch_desc, int in_file_desc){
 
     map<string, string>::iterator it;
     map<string, string>::iterator it2;
     string helper_string;
     printf("FILMODIFY %s\n", full_path_arg);
     
-    send_file(sock_num, full_path_arg, path_arg);
-    
-    it = moveto_special.find(string(full_path_arg));
-    
-    /* this is a file which was MOVED_TO, rename it to original name */
-    if(it != moveto_special.end()){
+    send_file(sock_num, full_path_arg, path_arg, pure_path_arg, event_name_arg);
 
-        printf("Moving %s to %s\n", it->first.c_str(), it->second.c_str());
-        rename(it->first.c_str(), it->second.c_str());
-        
-        /* erase complementary entry */
-        it2 = moveto_normal.find(it->second);
-        printf("Searching for %s in moveto_normal\n", it2->second.c_str());
-        if(it2 != moveto_normal.end()){
-            printf("Erasing %s from moveto_normal\n", it2->first.c_str());
-            moveto_normal.erase(it2);
-        }
-        moveto_special.erase(it);
+    /* begin of FIXME */
+#ifdef BIGDIR
+    /* remove temoporary tar and manually add watches for subdirectories of dir
+    that was transferred as tar */
+    it = tar_names.find(string(event_name_arg));
+    if(it != tar_names.end()){
+        char command_buf[BUFLEN];
+        printf("Removing temporary tar %s\n", full_path_arg);
+        unlink(full_path_arg);
+        /*snprintf(command_buf, BUFLEN, "rm \"%s\"", full_path_arg);
+        system(command_buf);*/
+        helper_string = it->second.c_str();
+        printf("Adding watches for subdirectories of %s\n", helper_string.c_str());
+        char arg[BUFLEN];
+        strncpy(arg, it->second.c_str(), BUFLEN);
+        add_watches_to_subdirs(arg, watch_desc, in_file_desc);
     }
+#endif
+/* end of FIXME */
+    
+    map<string, string>::iterator current_bigdir;
+    printf("Searching for %s in tar_names\n", event_name_arg);
+    current_bigdir = tar_names.find(string(event_name_arg));
+    
+    if(current_bigdir == tar_names.end()){ 
+        it = moveto_special.find(string(full_path_arg));
+        
+        /* this isn't special name of dir, it's just a file which was MOVED_TO
+        rename it to original name */
+        if(it != moveto_special.end()){
+
+            printf("Moving %s to %s\n", it->first.c_str(), it->second.c_str());
+            rename(it->first.c_str(), it->second.c_str());
+            
+            /* erase complementary entry */
+            it2 = moveto_normal.find(it->second);
+            printf("Searching for %s in moveto_normal\n", it2->second.c_str());
+            if(it2 != moveto_normal.end()){
+                printf("Erasing %s from moveto_normal\n", it2->first.c_str());
+                moveto_normal.erase(it2);
+            }
+            moveto_special.erase(it);
+        }
+    } 
+    
+    /* begin of FIXME */
+    /* this is MOVED_TO dir's copy
+    remove original MOVED_TO dir so we will be able to rename the copy to original name */
+    else {
+        tar_names.erase(current_bigdir);
+        printf("It's a moved_to dir, searching for %s in moveto_special\n", helper_string.c_str());
+        it = moveto_special.find(helper_string);
+        if(it != moveto_special.end()){
+            char command[BUFLEN];
+            printf("Removing %s\n", it->second.c_str());
+            snprintf(command, BUFLEN, "rm -r \"%s\"", it->second.c_str());
+            system(command);
+            moveto_special.erase(it);
+            /* GOTO (1) */
+        }
+    }
+    /* end of FIXME */
 }
+/* end of modify_file */
 
-void create_dir(char *full_path_arg, char *path_arg, int in_file_desc, int *watch_desc){
+void create_dir(char *full_path_arg, char *path_arg, char *curr_dir_arg,
+                const char *event_name_arg, int in_file_desc, int *watch_desc){
 
+#ifndef BIGDIR
+    /* when using BIGDIR, directories (even empty) are tarred and transferred 
+    like ordinary files so this code isn't needed */
     printf("DIRCREATE %s\n", full_path_arg);
     send_string(sock_num, "DIRCREATE", "DIRCREATE_MSG");
     send_ch_arr(sock_num, path_arg, "DIRCREATE_DATA", 0);
@@ -251,13 +388,45 @@ void create_dir(char *full_path_arg, char *path_arg, int in_file_desc, int *watc
         }
         
     printf("ADDWATCH (%d) %s\n", dir_list_index, dir_list[dir_list_index]);
+    
+#endif
+/* begin of FIXME */
+#ifdef BIGDIR
+    /* wait for copied dir to be flushed to disk */
+    sync();
+    
+    /* tar the big dir */
+    strncpy(bigdir, curr_dir_arg, BUFLEN);
+    char command[BUFLEN];
+    char tar_name[BUFLEN];
+    
+    /* get the name for temporary file */
+    snprintf(tar_name, BUFLEN, "%sXXXXXX", event_name_arg);
+    int fd = mkstemp(tar_name);
+    if(fd < 0)
+        perror("mkstemp");
+    close(fd);
+    
+    /* mkstemp creates file which we don't need */
+    unlink(tar_name);
+    
+    snprintf(command, BUFLEN, "cd \"%s\" && tar -cf \"%s\" \"%s\"", 
+        curr_dir_arg, tar_name, event_name_arg);
+    tar_names.insert(pair<string, string>(string(tar_name), string(full_path_arg)));
+    printf("Creating tar: command = %s\n", command);
+    system(command);
+                
+#endif
+/* end of FIXME */
 }
+/* end of create dir */
 
 void create_file(char *full_path_arg, char *path_arg){
     printf("FILCREATE %s\n", full_path_arg);
     send_string(sock_num, "FILCREATE", "FILCREATE_MSG");
     send_ch_arr(sock_num, path_arg, "FILCREATE_DATA", 0);
 }
+/* end of create_file */
 
 void move_from(char *full_path_arg, char *path_arg, char *ptr_arg,
                const struct inotify_event *event_arg, char *buf_ptr, ssize_t len_arg){
@@ -305,6 +474,7 @@ void move_from(char *full_path_arg, char *path_arg, char *ptr_arg,
         strncpy(renamed_files[file_number].old_name, path_arg, BUFLEN);
     }
 }
+/* end of move_from */
 
 void move_to(char *full_path_arg, char *path_arg,
              const struct inotify_event *event_arg, int *watch_desc, int in_file_desc){
@@ -361,12 +531,17 @@ void move_to(char *full_path_arg, char *path_arg,
         }
     }
     
-    /* no corresponding cookie found - file was moved into watched directory;
-    copy it so it's appearance will be detected */
+    /* no corresponding cookie found - file or dir was moved into watched directory;
+    copy it so it's appearance will be detected and if it is a dir, it'll be
+    transferred as tar */
     if(!found_corresp_cookie){
         char moved_special_name[BUFLEN];
         
-        /* get the name for temporary file */
+        /* get the name of temporary directory, works only with directories, doesn't work with files*/
+        /*snprintf(moved_special_name, BUFLEN, "%sXXXXXX", full_path_arg);
+        mkdtemp(moved_special_name);*/
+        
+        /* get the name for temporary file*/
         snprintf(moved_special_name, BUFLEN, "%sXXXXXX", full_path_arg);
         int fd_out = mkstemp(moved_special_name);
         if(fd_out < 0)
@@ -380,7 +555,6 @@ void move_to(char *full_path_arg, char *path_arg,
             exit(EXIT_FAILURE);
         }
 
-        /* copy MOVED_TO file to a temporary file */
         char buffer[16384];
         int read_from_input;
         while((read_from_input = read(fd_in, buffer, 16384)) > 0)
@@ -393,6 +567,7 @@ void move_to(char *full_path_arg, char *path_arg,
         moveto_normal.insert(pair<string, string>(string(full_path_arg), string(moved_special_name)));
     }
 }
+/* end of move_to */
 
 static void handle_events(int in_file_desc, int *watch_desc) {
 
@@ -407,7 +582,7 @@ static void handle_events(int in_file_desc, int *watch_desc) {
     char *buf_ptr = buf;
 
     /* Loop while events can be read from inotify file descriptor. */
-    for(;;) {
+    for (;;) {
 
         /* Read some events. */
         len = read(in_file_desc, buf, sizeof buf);
@@ -423,7 +598,7 @@ static void handle_events(int in_file_desc, int *watch_desc) {
             break;
 
         /* Loop over all events in the buffer */
-        for(ptr = buf; ptr < buf + len;
+        for (ptr = buf; ptr < buf + len;
             ptr += sizeof(struct inotify_event) + event->len) {
 
             event = (const struct inotify_event *) ptr;
@@ -438,11 +613,11 @@ static void handle_events(int in_file_desc, int *watch_desc) {
                (event->mask & IN_MOVED_FROM)){
                
                 /* controlling if maps are emptied */
-                printf("================== %lu %lu =================\n", 
-                    moveto_special.size(), moveto_normal.size());
+                printf("================== %lu %lu %lu =================\n", 
+                    moveto_special.size(), moveto_normal.size(), tar_names.size());
                 
                 /* find dir where the change happened */
-                for(int i=0; i<MAX_DIRS; ++i) {
+                for (int i=0; i<MAX_DIRS; ++i) {
                     if (watch_desc[i] == event->wd) {
                         curr_dir = dir_list[i];
                         break;
@@ -458,25 +633,25 @@ static void handle_events(int in_file_desc, int *watch_desc) {
                     j++;
                 }
                 
-                if(event->len)
+                if (event->len)
                     snprintf(full_path, BUFLEN, "%s/%s", curr_dir, event->name);
                 path = full_path + root_length;
                 printf("pure_path = %s\npath=%s\n", pure_path, path);
             }
 
-            if(event->mask & IN_DELETE) {
+            if (event->mask & IN_DELETE) {
                 if(event->mask & IN_ISDIR)
                     delete_dir(full_path, path);
                 else
                     delete_file(full_path, path);
             }
             
-            if(event->mask & IN_CLOSE_WRITE)
-                modify_file(full_path, path);
+            if (event->mask & IN_CLOSE_WRITE)
+                modify_file(full_path, event->name, pure_path, path, watch_desc, in_file_desc);
             
-            if(event->mask & IN_CREATE) {
+            if (event->mask & IN_CREATE) {
                 if(event->mask & IN_ISDIR)
-                    create_dir(full_path, path, in_file_desc, watch_desc);
+                    create_dir(full_path, path, curr_dir, event->name, in_file_desc, watch_desc);
                 else
                     create_file(full_path, path);
             } 
