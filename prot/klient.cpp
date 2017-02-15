@@ -123,7 +123,6 @@ void send_ch_arr(int sock_num_arg, const char *arr, string msg_name, int desired
     assert(arr_len <= BUFLEN);
     
     /* send number of bytes to be expected */
-    printf("I'm going to send %d\n", *ptr);
     written = send(sock_num_arg, ptr, sizeof(int), 0);
     printf("%s: packet_size   written = %d \n", msg_name.c_str(), written);
     if(written < 0)
@@ -161,7 +160,6 @@ void delete_file(char *full_path_arg, char *path_arg){
 
 void send_file(int sock_num, char *full_path_arg, char *path_arg){
 
-    /* TODO the file should possibly be locked in order to prevent data corruption */
     /* check file size and number of chunks to send */
     int chunks;
     struct stat tr_file;
@@ -197,7 +195,7 @@ void send_file(int sock_num, char *full_path_arg, char *path_arg){
     send_string(sock_num, number_str, "FILMODIFY_CHUNKS");
     for(int i=1; i<=chunks; i++){
         read_succ = read(fd, databuf, BUFLEN);
-        snprintf(chunk_arr, BUFLEN, "FILMODIFY_DATA_%d", i);
+        snprintf(chunk_arr, SMALLBUF, "FILMODIFY_DATA_%d", i);
         int minim = min(read_succ, BUFLEN);
         send_ch_arr(sock_num, databuf, chunk_arr, minim);
     }
@@ -264,7 +262,7 @@ void move_from(char *full_path_arg, char *path_arg, char *ptr_arg,
 
     char *ptr_temp;
     const struct inotify_event *event_temp;
-    int file_number;
+    int file_number = -1;
     
     /* check if this event has corresponding IN_MOVED_TO in the buffer
     this is ALMOST always the case when renaming files */
@@ -301,6 +299,10 @@ void move_from(char *full_path_arg, char *path_arg, char *ptr_arg,
                 file_number = j;
                 break;
             }
+        if(file_number == -1){
+            printf("Can't find a place to save cookie!\n");
+            file_number = 0;
+        }
         renamed_files[file_number].cookie = event_arg->cookie;
         strncpy(renamed_files[file_number].old_name, path_arg, BUFLEN);
     }

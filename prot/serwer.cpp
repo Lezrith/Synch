@@ -15,6 +15,8 @@ using namespace std;
 
 char *data;
 char *data2;
+char *file_path;
+bool exit_outer_loop;
 
 /* in case of error returns negative number, otherwise number of bytes received */
 int receive_message(int sock_arg, char *data_arg){
@@ -29,11 +31,46 @@ int receive_message(int sock_arg, char *data_arg){
     while(total_received < to_be_received){
         if((received = recv(sock_arg, data_arg+total_received*sizeof(char), to_be_received-total_received, 0)) == 0) return -2;
         /* printing binary data may cause problems, left for testing with text data */
-        //printf("received=%d data=%s\n", received, data_arg);
-        printf("received=%d\n", received);
+        printf("received=%d data=%s\n", received, data_arg);
+        //printf("received=%d\n", received);
+        if(received == -1)
+            exit(EXIT_FAILURE);
         total_received += received;
     }
     return total_received;
+}
+
+/* returns -1 in case of error */
+int receive_file(int sock_arg, char *file_path_arg){
+
+    /* receive how many chunks are there going to be sent */
+    if(receive_message(sock_arg, data) < 0){
+        printf("The client has disconnected.\n");
+        return -1;
+    }
+    int chunks = atoi(data);
+    printf("chunks = %d\n", chunks);
+    int bytes;
+
+    /* open the file which is modified */
+    int fd=open(file_path_arg, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if(fd<0){
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    
+    for(int i=1; i<=chunks; i++){
+        if((bytes = receive_message(sock_arg, data)) < 0){
+            printf("The client has disconnected during transfer.\nData in file %s is likely to be corrupted.\n", file_path_arg);
+            exit_outer_loop = true;
+            close(fd);
+            return -1;
+        }
+        printf("chunk_number=%d\n", i);
+        write(fd, data, bytes);
+    }
+    close(fd);
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -77,7 +114,6 @@ int main(int argc, char **argv) {
     socklen_t nTmp = sizeof(struct sockaddr);
     char root_path[BUFLEN];
     char file[BUFLEN];
-    char temp_name[BUFLEN];
     char message_type[BUFLEN];
     struct stat helper;
     
@@ -102,7 +138,7 @@ int main(int argc, char **argv) {
         n = sprintf(connect_info, "Connection from %s, port: %d\n", 
             inet_ntoa((struct in_addr)stClientAddr.sin_addr), stClientAddr.sin_port);
         write(1, connect_info, n);
-        bool exit_outer_loop = false;
+        exit_outer_loop = false;
         
         while(!exit_outer_loop){
             printf("===============================\n");
@@ -177,44 +213,20 @@ int main(int argc, char **argv) {
                     rename(file, file_2);
             } 
             
-            else if(!strcmp(message_type, "FILMODIFY") || !strcmp(message_type, "BIGDIR")){
-                bool bigdir_arrived = false;
-                char bigdir_path[BUFLEN];
+            else if(!strcmp(message_type, "FILMODIFY")){
             
-                /* open the file which is modified */
+                /* determine file to be received */
                 if(receive_message(client_sock_num, data) < 0){
                     printf("The client has disconnected.\n");
                     break;
                 }
-                char file_path[BUFLEN];
-                if(bigdir_arrived)
-                    snprintf(file_path, BUFLEN, "%s/%s/%s", root_path, bigdir_path, data);
-                else
-                    snprintf(file_path, BUFLEN, "%s/%s", root_path, data);
-                snprintf(temp_name,BUFLEN, "%s",data);
-                int fd=open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                if(fd<0) perror("open");
-                
-                /* receive how many chunks are there going to be sent */
-                if(receive_message(client_sock_num, data) < 0){
-                    printf("The client has disconnected.\nData in file %s has been lost.\n", file_path);
-                    close(fd);
+                file_path = (char *) calloc(BUFLEN, sizeof(char));
+                snprintf(file_path, BUFLEN, "%s/%s", root_path, data);
+
+                int result = receive_file(client_sock_num, file_path) == -1;
+                free(file_path);
+                if(result == -1)
                     break;
-                }
-                int chunks = atoi(data);
-                printf("chunks = %d\n", chunks);
-                int bytes;
-                
-                for(int i=1; i<=chunks; i++){
-                    if((bytes = receive_message(client_sock_num, data)) < 0){
-                        printf("The client has disconnected during transfer.\n Data in file %s is likely to be corrupted.\n", file_path);
-                        exit_outer_loop = true;
-                        break;
-                    }
-                    printf("chunk_number=%d\n", i);
-                    write(fd, data, bytes);
-                }
-                close(fd);
             }
         }
         close(client_sock_num);
