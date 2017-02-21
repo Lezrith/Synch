@@ -217,7 +217,7 @@ deque<Event*> File::FindDifferences(File* f)
     return result;
 }
 
-//finds childes of 'f' which are not childs of this File
+//finds children of 'f' which are not children of this File
 deque<Event*> File::FindDeletes(File* f)
 {
     deque<Event*> result, childEvents;
