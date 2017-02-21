@@ -27,3 +27,7 @@
 *.exe
 *.out
 *.app
+/Server/dist/
+/Server/build/
+/Client/build/
+/Client/dist/
