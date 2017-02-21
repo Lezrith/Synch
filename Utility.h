@@ -42,11 +42,9 @@ public:
     Utility(const Utility& orig);
     virtual ~Utility();
     static int IsRegularFile(string &path);
-    static string GetFileNameFromPath(string &path);
     static string TimeToString(time_t &time);
     static time_t GetLastModificationDate(string path);
     static void UpdateLastModificationDate(string path, time_t lastModificationDate);
-    static string GetFirstElementOfPath(string &path);
     static crc_t CalculateCRC32OfFile(string path);
 private:
     static inline crc_t crc_init(void);

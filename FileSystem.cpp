@@ -66,6 +66,7 @@ void FileSystem::FromString(string s)
     mx.unlock();
 }
 
+//returns queue of events to perform on 'fs' in order to make it the same as calling FileSystem
 deque<Event*> FileSystem::FindDifferences(FileSystem *f)
 {
     mx.lock();

@@ -208,7 +208,7 @@ time_t receiveModificationDate(int clientSocket)
     }
     return -1;
 }
-
+//split string into chunks of desired length and send
 void send_big_string(int sock_num_arg, string string_to_send, string msg_name)
 {
     int length = string_to_send.size();
@@ -218,6 +218,7 @@ void send_big_string(int sock_num_arg, string string_to_send, string msg_name)
         send_string(sock_num_arg, string_to_send.substr(i, BUFLEN), "BIGSTRING_DATA");
 }
 
+//receive string in chunks and merge it
 string receive_big_string(int sock_arg)
 {
     char temp_data[BUFLEN];

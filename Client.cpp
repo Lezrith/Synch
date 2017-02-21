@@ -20,6 +20,7 @@
 #include <set>
 #include <signal.h>
 #include <chrono>
+#include <mutex>
 #include "Network.h"
 #include "FileSystem.h"
 
@@ -47,6 +48,7 @@ set<string> inotify_ignore_modified;
 struct sockaddr_in soc_add;
 int *watch_desc;
 int in_file_desc;
+mutex sendMutex;
 
 /* function used when file or directory is cut from (MOVED_FROM) watched directory
    in this case it should be deleted (directory is deleted together with its contents) */
@@ -146,10 +148,10 @@ bool check_if_modified_file_ignored(char *path){
 }
 
 void modify_file(char *full_path_arg, char *path_arg){
-    
+    sendMutex.lock();
     if(!check_if_modified_file_ignored(path_arg))
         send_file(sock_num, full_path_arg, path_arg);
-    
+    sendMutex.unlock();
     /*map<string, string>::iterator it;
     map<string, string>::iterator it2;
     it = moveto_special.find(string(full_path_arg));*/
@@ -188,8 +190,10 @@ void add_new_watch(char *full_path_arg){
 void create_dir(char *full_path_arg, char *path_arg){
 
     if(!check_if_file_ignored(path_arg)){
+        sendMutex.lock();
         send_string(sock_num, "DIRCREATE", "DIRCREATE_MSG");
         send_ch_arr(sock_num, path_arg, "DIRCREATE_DATA", 0);
+        sendMutex.unlock();
     }
     
     add_new_watch(full_path_arg);
@@ -197,9 +201,11 @@ void create_dir(char *full_path_arg, char *path_arg){
 
 void create_file(char *full_path_arg, char *path_arg){
     if(!check_if_file_ignored(path_arg)){
+        sendMutex.lock();
         send_string(sock_num, "FILCREATE", "FILCREATE_MSG");
         send_ch_arr(sock_num, path_arg, "FILCREATE_DATA", 0);
         sendLastModificationDate(sock_num, full_path_arg);
+        sendMutex.unlock();
     }
 }
 
@@ -212,16 +218,20 @@ void delete_dir(char *full_path_arg, char *path_arg){
 
     /* BIGDELETE message adds full path to set, so we have to search for full_path_arg too */
     if(!check_if_file_ignored(path_arg) && !(check_if_file_ignored(full_path_arg))){
+        sendMutex.lock();
         send_string(sock_num, "DIRDELETE", "DIRDELETE_MSG");
         send_ch_arr(sock_num, path_arg, "DIRDELETE_DATA", 0);
+        sendMutex.unlock();
     }
 }
 
 void delete_file(char *full_path_arg, char *path_arg){
     /* BIGDELETE message adds full path to set, so we have to search for full_path_arg too */
     if(!check_if_file_ignored(path_arg) && !(check_if_file_ignored(full_path_arg))){
+        sendMutex.lock();
         send_string(sock_num, "FILDELETE", "FILDELETE_MSG");
         send_ch_arr(sock_num, path_arg, "FILDELETE_DATA", 0);
+        sendMutex.unlock();
     }
 }
 
@@ -287,9 +297,11 @@ void move_to(char *full_path_arg, char *path_arg, const struct inotify_event *ev
             
             /* send changes to server only if these changes didn't come from it */
             if(!check_if_file_ignored(path_arg)){
+                sendMutex.lock();
                 send_string(sock_num, "MOVED", "MOVED_MSG");
                 send_ch_arr(sock_num, renamed_files[j].old_name, "MOVED_FROM", 0);
                 send_ch_arr(sock_num, path_arg, "MOVED_TO", 0);
+                sendMutex.unlock();
             }
             
             /* deal with outdated watches */
@@ -507,8 +519,10 @@ void receiver_thread_fun(){
     /*Inform server about initial synch*/
     string root_directory_string = string(root_directory);
     FileSystem *fs = new FileSystem(root_directory_string);
+    sendMutex.lock();
     send_string(sock_num, "INITIALSYNCH", "INITIALSYNCH_MSG");
     send_big_string(sock_num, fs->ToString(), "INITIALSYNCH_DATA");
+    sendMutex.unlock();
     delete fs;
 
     /* run until server stopped responding permanently */
@@ -619,7 +633,9 @@ void receiver_thread_fun(){
                         break;
                     snprintf(file, BUFLEN, "%s%s", root_directory, data);
                     printf("Receiver: sending file %s\n", file);
+                    sendMutex.lock();
                     send_file(sock_num, file, data);
+                    sendMutex.unlock();
                 }
             }
         }
@@ -644,7 +660,11 @@ void receiver_thread_fun(){
         if(exit_thread)
             break;
         else
+        {
+            sendMutex.lock();
 	        send_string(sock_num, "RECONNECTED", "RECONNECTED_MSG");
+            sendMutex.unlock();
+        }
     }
     printf("Receiver: goodbye!\n");
     if(exit_thread)
@@ -724,7 +744,9 @@ int main(int argc, char* argv[]) {
 		exit(EXIT_FAILURE);
     }
     
+    sendMutex.lock();
     send_string(sock_num, "NORMALCONNECTION", "NORMALCONNECTION_MSG");
+    sendMutex.unlock();
 
     /* start receiver thread */
     thread receiver_th(receiver_thread_fun);

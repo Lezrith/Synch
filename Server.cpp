@@ -98,11 +98,13 @@ void handle_client(int client_sock_num, string root_path_string){
         cout << "Connection type message: failed for client " << thread_id << endl;
     else
     {
+        //first time connection - perform initial synch
         if (!strcmp(currentThreadInfo->data, "NORMALCONNECTION"))
         {
             cout << "Connection type message: client " << thread_id << " connected normally." << endl;
             performInitialSynchronization = true;
         }
+        //reconnection - no need for initial synch
         else if (!strcmp(currentThreadInfo->data, "RECONNECTED"))
         {
             cout << "Connection type message: client " << thread_id << " reconnected." << endl;
@@ -118,18 +120,22 @@ void handle_client(int client_sock_num, string root_path_string){
             cout << "Initial synchronization: failed for client " << thread_id << endl;
         else
         {
+            //get client's FileSystem in form of string
             string clientFSString = receive_big_string(client_sock_num);
             if ( clientFSString == "")
                 cout << "Initial synchronization: failed for client " << thread_id << endl;
             else
             {
                 cout << "Initial synchronization for client " << thread_id << endl;
+                //create list of server's files
                 FileSystem *serverFS = new FileSystem(root_path_string);
                 FileSystem *clientFS = new FileSystem;
                 clientFS->FromString(clientFSString);
                 cout << "Files on server:" << endl << serverFS->ToString() << endl;
                 cout << "Files on client:" << endl << clientFS->ToString() << endl;
+                //check what needs to be done on client's side
                 auto changes = serverFS->FindDifferences(clientFS);
+                //loop through changes in reverse order so deletes happen from the 'bottom'
                 for (deque<Event*>::reverse_iterator i = changes.rbegin(); i != changes.rend(); ++i)
                 {
                     /* There is a file on client but not on server */
@@ -139,6 +145,7 @@ void handle_client(int client_sock_num, string root_path_string){
                         cout << (*i)->ToString() << endl;
                         if ((*i)->IsDirectory())
                         {
+                            //ask client to delete directory
                             thread_mutexes.at(currentThreadInfo->sock_num)->lock();
                             send_string(currentThreadInfo->sock_num, "DIRDELETE", "DIRDELETE_MSG");
                             send_string(currentThreadInfo->sock_num, (*i)->GetPath().GetPath(), "DIRDELETE_DATA");
@@ -146,6 +153,7 @@ void handle_client(int client_sock_num, string root_path_string){
                         }
                         else
                         {
+                            //ask client to delete file
                             thread_mutexes.at(currentThreadInfo->sock_num)->lock();
                             send_string(currentThreadInfo->sock_num, "FILDELETE", "FILDELETE_MSG");
                             send_string(currentThreadInfo->sock_num, (*i)->GetPath().GetPath(), "FILDELETE_DATA");
@@ -153,6 +161,7 @@ void handle_client(int client_sock_num, string root_path_string){
                         }
                     }
                 }
+                //loop through changes in normal order so creates happen from the 'top'
                 for (auto c : changes)
                 {
                     cout << c->ToString() << endl;
@@ -163,6 +172,7 @@ void handle_client(int client_sock_num, string root_path_string){
                         case CREATE:
                             if (c->IsDirectory())
                             {
+                                //ask client to create directory
                                 thread_mutexes.at(currentThreadInfo->sock_num)->lock();
                                 send_string(currentThreadInfo->sock_num, "DIRCREATE", "DIRCREATE_MSG");
                                 send_string(currentThreadInfo->sock_num, c->GetPath().GetPath(), "DIRCREATE_DATA");
@@ -172,13 +182,15 @@ void handle_client(int client_sock_num, string root_path_string){
                             {
                                 strcpy(currentThreadInfo->data, c->GetPath().GetPath().c_str());
                                 snprintf(file, BUFLEN, "%s%s", root_path, currentThreadInfo->data);
-
+                                
+                                //ask client to create file
                                 thread_mutexes.at(currentThreadInfo->sock_num)->lock();
                                 send_string(currentThreadInfo->sock_num, "FILCREATE", "FILCREATE_MSG");
                                 send_string(currentThreadInfo->sock_num, c->GetPath().GetPath(), "FILCREATE_DATA");
                                 sendLastModificationDate(currentThreadInfo->sock_num, file);
                                 thread_mutexes.at(currentThreadInfo->sock_num)->unlock();
 
+                                //ask client to modify file to match server's
                                 thread_mutexes.at(currentThreadInfo->sock_num)->lock();
                                 send_file(currentThreadInfo->sock_num, file, currentThreadInfo->data);
                                 sendLastModificationDate(currentThreadInfo->sock_num, file);
@@ -197,6 +209,7 @@ void handle_client(int client_sock_num, string root_path_string){
                             strcpy(currentThreadInfo->data, c->GetPath().GetPath().c_str());
                             snprintf(file, BUFLEN, "%s%s", root_path, currentThreadInfo->data);
 
+                            //ask client to receive new version of file
                             thread_mutexes.at(currentThreadInfo->sock_num)->lock();
                             send_file(currentThreadInfo->sock_num, file, currentThreadInfo->data);
                             thread_mutexes.at(currentThreadInfo->sock_num)->unlock();

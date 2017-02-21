@@ -60,6 +60,7 @@ Utility::~Utility()
 {
 }
 
+//checks if file at 'path' is regural file and not a directory
 int Utility::IsRegularFile(string &path)
 {
     struct stat path_stat;
@@ -71,13 +72,6 @@ int Utility::IsRegularFile(string &path)
     return S_ISREG(path_stat.st_mode);
 }
 
-string Utility::GetFileNameFromPath(string& path)
-{
-    int lastSlashPosition = path.rfind("/");
-    if (lastSlashPosition == -1) return path;
-    else return path.substr(lastSlashPosition + 1, path.size() - 1);
-}
-
 string Utility::TimeToString(time_t& time)
 {
     stringstream ss;
@@ -85,6 +79,7 @@ string Utility::TimeToString(time_t& time)
     return ss.str();
 }
 
+//returns last modification date of file at 'path'
 time_t Utility::GetLastModificationDate(string path)
 {
     struct stat attrib;
@@ -95,7 +90,7 @@ time_t Utility::GetLastModificationDate(string path)
     }
     return attrib.st_mtime;
 }
-
+//changes last modification date of file at 'path' to provided
 void Utility::UpdateLastModificationDate(string path, time_t lastModificationDate)
 {
     utimbuf buf = {lastModificationDate, lastModificationDate};
@@ -103,17 +98,6 @@ void Utility::UpdateLastModificationDate(string path, time_t lastModificationDat
     {
         cout << "Error while trying to update last modification date of file: " << path << endl;
     }
-}
-
-string Utility::GetFirstElementOfPath(string& path)
-{
-    int startPos = 0;
-    if (path[0] == '.' && path[1] == '/') startPos = 2;
-    if (path[0] == '/') startPos = 1;
-
-    size_t firstSlash = path.substr(startPos).find("/");
-    if (firstSlash != string::npos) return path.substr(startPos, firstSlash);
-    else return path.substr(startPos);
 }
 
 crc_t Utility::CalculateCRC32OfFile(string path)

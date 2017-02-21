@@ -24,10 +24,12 @@ File::File(string &path, string absolutePath) : path(path)
     this->lastModificationDate = Utility::GetLastModificationDate(absolutePath);
     parent = nullptr;
     name = this->path.GetFilename();
+    //If node is not a directory end
     if (Utility::IsRegularFile(absolutePath))
     {
         isDirectory = false;
     }
+    //If node is directory add it contents as child nodes
     else
     {
         isDirectory = true;
@@ -111,27 +113,6 @@ void File::FromString(string s)
     else isDirectory = false;
 
     string childString = "";
-    /*while (getline(ss, to, '\n'))
-    {
-        if (to[0] == ' ')childString = to.substr(1, to.size() - 1) + "\n";
-        else childString = to;
-        while (getline(ss, to, '\n'))
-        {
-            if (to[0] == ' ' && to[1] == ' ')
-            {
-                childString += to.substr(1, to.size() - 1) + "\n";
-            }
-            else
-            {
-                File* newChild = new File();
-                newChild->FromString(childString);
-                children.push_back(newChild);
-                if (to[0] == ' ')childString = to.substr(1, to.size() - 1) + "\n";
-                else childString = to;
-                break;
-            }
-        }
-    }*/
     if (ss.rdbuf()->in_avail() != 0)
     {
         getline(ss, to, '\n');
@@ -194,45 +175,49 @@ void File::SaveToFile(string& path)
     f.close();
 }
 
-//returns queue of events to perform on 'fs' in order to make it the same as this FileSystem
-
-deque<Event*> File::FindDifferences(File* fs)
+deque<Event*> File::FindDifferences(File* f)
 {
     deque<Event*> result, childEvents;
     string &&p = path.GetPath();
-    File *other = fs->GetFileFromPath(p);
+    File *other = f->GetFileFromPath(p);
+    //this File was not found in f -> needs to be created
     if (other == nullptr) result.push_back(new Event(this->path, this->lastModificationDate, this->isDirectory, CREATE));
     else
     {
+        //this File and other File are regular files
         if (!this->isDirectory && !other->isDirectory)
         {
+            //other File if older than this File -> needs to be updated
             if (other->lastModificationDate<this->lastModificationDate)
                 result.push_back(new Event(this->path, this->lastModificationDate, false, UPDATE_THIS));
+            //other File is newer than this File -> this File needs to be updated
             if (other->lastModificationDate>this->lastModificationDate)
                 result.push_back(new Event(this->path, other->lastModificationDate, false, UPDATE_OTHER));
         }
+        //one of Files is a directory
         else if (!(this->isDirectory && other->isDirectory))
         {
+            //delete other File and replace it with this
             result.push_back(new Event(this->path, this->lastModificationDate, this->isDirectory, CREATE));
             result.push_back(new Event(other->path, other->lastModificationDate, other->isDirectory, DELETE));
         }
     }
+    //do the same for all children
     for (auto c : this->children)
     {
-        childEvents = c->FindDifferences(fs);
+        childEvents = c->FindDifferences(f);
         result.insert(result.end(), childEvents.begin(), childEvents.end());
     }
+    //if this File is root node find delted nodes
     if (parent == nullptr)
     {
-
-        childEvents = this->FindDeletes(fs);
+        childEvents = this->FindDeletes(f);
         result.insert(result.end(), childEvents.begin(), childEvents.end());
     }
     return result;
 }
 
-//znajduje usunięcia w tym systemie plików względem fs
-
+//finds childes of 'f' which are not childs of this File
 deque<Event*> File::FindDeletes(File* f)
 {
     deque<Event*> result, childEvents;
