@@ -1,0 +1,7 @@
+File synching utility for linux. Files are synchronized with server over the web and propagated to
+other clients.
+ Usage:
+  run make
+  run client <directory to track> <server ip> <server port>
+  run server <directory to store> <ip> <port>
+Work of F. Walkowiak and K.Tomczak
